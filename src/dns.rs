@@ -1,14 +1,13 @@
-use anyhow::{Context, Result};
-
 #[cfg(target_os = "macos")]
 use std::collections::HashMap;
-#[cfg(target_os = "macos")]
-use std::process::Command;
-
 #[cfg(target_os = "linux")]
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::Command;
+
+use anyhow::{Context, Result};
 
 #[cfg(target_os = "linux")]
 const RESOLV_CONF_PATH: &str = "/etc/resolv.conf";
@@ -334,6 +333,9 @@ mod tests {
     #[test]
     fn render_starts_with_comment_marker() {
         let out = render_resolv_conf(&["1.1.1.1"], &[]);
-        assert!(out.starts_with("# "), "expected a comment banner, got: {out}");
+        assert!(
+            out.starts_with("# "),
+            "expected a comment banner, got: {out}"
+        );
     }
 }

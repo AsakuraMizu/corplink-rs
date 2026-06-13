@@ -10,12 +10,6 @@ mod totp;
 mod utils;
 mod wg;
 
-#[cfg(windows)]
-use is_elevated;
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use dns::DNSManager;
-
 use std::env;
 use std::process::exit;
 
@@ -23,6 +17,8 @@ use anyhow::{anyhow, Context, Result};
 
 use client::Client;
 use config::{Config, WgConf};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use dns::DNSManager;
 
 fn print_usage_and_exit(name: &str, conf: &str) {
     println!("usage:\n\t{} {}", name, conf);
@@ -154,8 +150,14 @@ async fn run() -> Result<()> {
     let mut uapi = wg::UAPIClient { name: name.clone() };
     if let Some(listen) = &socks5_listen {
         log::info!("start wg-corplink (netstack/socks5) on {}", listen);
-        wg::start_wg_go_netstack(&wg_conf, listen, &socks5_username, &socks5_password, with_wg_log)
-            .context("failed to start wg-corplink in netstack mode")?;
+        wg::start_wg_go_netstack(
+            &wg_conf,
+            listen,
+            &socks5_username,
+            &socks5_password,
+            with_wg_log,
+        )
+        .context("failed to start wg-corplink in netstack mode")?;
         uapi.config_wg_netstack(&wg_conf)
             .await
             .context("failed to config netstack interface with uapi")?;

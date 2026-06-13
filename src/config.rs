@@ -1,8 +1,8 @@
 use std::fmt;
-use tokio::fs;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use tokio::fs;
 
 use crate::state::State;
 use crate::utils;
@@ -93,7 +93,7 @@ impl fmt::Display for Config {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match serde_json::to_string_pretty(self) {
             Ok(s) => write!(f, "{}", s),
-            Err(e) => write!(f, "<invalid config: {e}>")
+            Err(e) => write!(f, "<invalid config: {e}>"),
         }
     }
 }

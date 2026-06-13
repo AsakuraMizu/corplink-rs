@@ -1,4 +1,3 @@
-use chrono::Utc;
 use std::collections::HashMap;
 use std::fmt;
 use std::path;
@@ -8,6 +7,7 @@ use std::time::{Duration, SystemTime};
 use std::{fs, io};
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::Utc;
 use cookie::Cookie as RawCookie;
 use cookie_store::{Cookie, CookieStore};
 use reqwest::header;
@@ -313,7 +313,9 @@ impl Client {
         log::info!("please scan the QR code or visit the following link to auth corplink:\n{url}");
         match TerminalQrCode::from_bytes(url.as_bytes()) {
             Ok(qr) => qr.print(),
-            Err(e) => {log::warn!("failed to generate qr code: {e}");}
+            Err(e) => {
+                log::warn!("failed to generate qr code: {e}");
+            }
         }
         match method {
             PLATFORM_LARK | PLATFORM_OIDC => {
