@@ -28,7 +28,7 @@ use crate::state::State;
 use crate::totp::{totp_offset, TIME_STEP};
 use crate::utils;
 
-const COOKIE_FILE_SUFFIX: &str = "cookies.json";
+const COOKIE_FILE_SUFFIX: &str = "cookies.jsonl";
 const USER_AGENT: &str = "CorpLink/201000 (GooglePixel; Android 10; en)";
 
 #[derive(Clone)]

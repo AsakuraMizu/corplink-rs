@@ -69,7 +69,7 @@ systemctl enable corplink-rs.service
 
 # systemd with custom config
 # config is /etc/corplink/test.json
-# NOTE: cookies.json is reserved by cookie storage
+# NOTE: cookies.jsonl is reserved by cookie storage
 systemctl start corplink-rs@test.service
 ```
 
