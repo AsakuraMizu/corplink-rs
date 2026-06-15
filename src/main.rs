@@ -16,9 +16,10 @@ use std::process::exit;
 use anyhow::{anyhow, Context, Result};
 
 use client::Client;
-use config::{Config, WgConf};
+use config::{ConfigStore, Platform};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use dns::DNSManager;
+use wg::WgConf;
 
 fn print_usage_and_exit(name: &str, conf: &str) {
     println!("usage:\n\t{} {}", name, conf);
@@ -71,16 +72,13 @@ async fn run() -> Result<()> {
     print_version();
 
     let conf_file = parse_arg();
-    let mut conf = Config::from_file(&conf_file)
+    let mut conf = ConfigStore::load(&conf_file)
         .await
         .context("failed to load config")?;
-    let name = conf
-        .interface_name
-        .clone()
-        .context("interface name missing in config")?;
-    let socks5_listen = conf.socks5_listen.clone();
-    let socks5_username = conf.socks5_username.clone().unwrap_or_default();
-    let socks5_password = conf.socks5_password.clone().unwrap_or_default();
+    let name = conf.wireguard.interface_name.clone();
+    let socks5_listen = conf.socks5.listen.clone();
+    let socks5_username = conf.socks5.username.clone().unwrap_or_default();
+    let socks5_password = conf.socks5.password.clone().unwrap_or_default();
     let netstack_mode = socks5_listen.is_some();
 
     // netstack/socks5 mode runs entirely in userspace (no kernel TUN device,
@@ -90,17 +88,17 @@ async fn run() -> Result<()> {
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let use_vpn_dns = conf.use_vpn_dns.unwrap_or(false);
+    let use_vpn_dns = conf.dns.enabled;
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let dns_backup_filename = conf.dns_backup_filename.clone();
+    let dns_backup_filename = conf.dns.backup_filename.clone();
 
-    if conf.server.is_none() {
-        let resp = client::get_company_url(conf.company_name.as_str())
+    if conf.portal.server.is_none() {
+        let resp = client::get_company_url(conf.portal.company_name.as_str())
             .await
             .with_context(|| {
                 format!(
                     "failed to fetch company server from company name {}",
-                    conf.company_name
+                    conf.portal.company_name
                 )
             })?;
         log::info!(
@@ -109,14 +107,13 @@ async fn run() -> Result<()> {
             resp.en_name,
             resp.domain
         );
-        conf.server = Some(resp.domain);
-        conf.save()
+        conf.update(|conf| conf.portal.server = Some(resp.domain))
             .await
             .context("failed to persist company server")?;
     }
 
-    let with_wg_log = conf.debug_wg.unwrap_or_default();
-    let platform = conf.platform.clone();
+    let with_wg_log = conf.wireguard.debug;
+    let platform = conf.auth.platform;
     let mut c = Client::new(conf).context("failed to initialize client")?;
     let mut logout_retry = true;
     let wg_conf: Option<WgConf>;
@@ -216,7 +213,7 @@ async fn run() -> Result<()> {
     };
 
     // only logout for feilian_v1
-    if platform.as_deref() == Some(config::PLATFORM_CORPLINK_V1) {
+    if platform == Some(Platform::CorplinkV1) {
         log::info!("logging out current terminal...");
         if let Err(e) = c.logout().await {
             log::warn!("failed to logout: {}", e)

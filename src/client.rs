@@ -18,22 +18,19 @@ use serde_json::{json, Map, Value};
 use sha2::Digest;
 
 use crate::api::{ApiName, ApiUrl, URL_GET_COMPANY};
-use crate::config::{
-    Config, WgConf, PLATFORM_CORPLINK, PLATFORM_CORPLINK_V1, PLATFORM_LARK, PLATFORM_LDAP,
-    PLATFORM_OIDC, STRATEGY_DEFAULT, STRATEGY_LATENCY,
-};
+use crate::config::{ConfigStore, Platform, RouteMode, SelectStrategy};
 use crate::qrcode::TerminalQrCode;
 use crate::resp::*;
 use crate::state::State;
 use crate::totp::{totp_offset, TIME_STEP};
 use crate::utils;
+use crate::wg::WgConf;
 
 const COOKIE_FILE_SUFFIX: &str = "cookies.jsonl";
 const USER_AGENT: &str = "CorpLink/201000 (GooglePixel; Android 10; en)";
 
-#[derive(Clone)]
 pub struct Client {
-    conf: Config,
+    conf: ConfigStore,
     cookie: Arc<CookieStoreMutex>,
     c: reqwest::Client,
     api_url: ApiUrl,
@@ -72,13 +69,9 @@ pub async fn get_company_url(code: &str) -> anyhow::Result<RespCompany> {
 }
 
 impl Client {
-    pub fn new(conf: Config) -> Result<Client> {
-        let f = conf.conf_file.clone().context("config file path missing")?;
-        let interface_name = conf
-            .interface_name
-            .clone()
-            .context("interface name missing in config")?;
-        let dir = match path::Path::new(&f).parent() {
+    pub fn new(conf: ConfigStore) -> Result<Client> {
+        let interface_name = &conf.wireguard.interface_name;
+        let dir = match conf.path().parent() {
             Some(dir) => dir,
             None => path::Path::new("."),
         };
@@ -104,20 +97,19 @@ impl Client {
 
         let mut headers = header::HeaderMap::new();
 
-        if let Some(server) = conf.server.as_ref() {
+        if let Some(server) = conf.portal.server.as_ref() {
             let server_url = Url::from_str(server.as_str())
                 .with_context(|| format!("invalid server url: {server}"))?;
 
-            if let Some(device_id) = conf.device_id.as_ref() {
-                cookie_store
-                    .insert_raw(&RawCookie::new("device_id", device_id), &server_url)
-                    .context("failed to insert device_id cookie")?;
-            }
-            if let Some(device_name) = conf.device_name.as_ref() {
-                cookie_store
-                    .insert_raw(&RawCookie::new("device_name", device_name), &server_url)
-                    .context("failed to insert device_name cookie")?;
-            }
+            cookie_store
+                .insert_raw(&RawCookie::new("device_id", &conf.device.id), &server_url)
+                .context("failed to insert device_id cookie")?;
+            cookie_store
+                .insert_raw(
+                    &RawCookie::new("device_name", &conf.device.name),
+                    &server_url,
+                )
+                .context("failed to insert device_name cookie")?;
 
             if let Some(domain) = server_url.domain().or_else(|| server_url.host_str()) {
                 if let Some(csrf_token) = cookie_store.get(domain, "/", "csrf-token") {
@@ -141,28 +133,25 @@ impl Client {
             .timeout(Duration::from_millis(10000))
             .build()
             .context("build http client")?;
-        let conf_bak = conf.clone();
+        let api_url = ApiUrl::new(&conf)?;
         Ok(Client {
             conf,
             cookie: Arc::clone(&cookie_store),
             c,
-            api_url: ApiUrl::new(&conf_bak)?,
+            api_url,
             date_offset_sec: 0,
         })
     }
 
     async fn change_state(&mut self, state: State) -> Result<()> {
-        self.conf.state = Some(state);
-        self.conf.save().await?;
+        self.conf
+            .update(|conf| conf.session.state = Some(state))
+            .await?;
         Ok(())
     }
 
     fn save_cookie(&self) -> Result<()> {
-        let interface_name = self
-            .conf
-            .interface_name
-            .as_ref()
-            .context("interface name missing in config")?;
+        let interface_name = &self.conf.wireguard.interface_name;
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -278,10 +267,10 @@ impl Client {
     }
 
     pub fn need_login(&self) -> bool {
-        matches!(self.conf.state.as_ref(), None | Some(State::Init))
+        matches!(self.conf.session.state.as_ref(), None | Some(State::Init))
     }
 
-    async fn check_tps_token(&mut self, token: &String) -> Result<String> {
+    async fn check_tps_token(&mut self, token: &str) -> Result<String> {
         // tps confirmed, try to login with token
         let mut m = Map::new();
         m.insert("token".to_string(), json!(token));
@@ -305,9 +294,9 @@ impl Client {
 
     async fn get_otp_uri_from_tps(
         &mut self,
-        method: &str,
-        url: &String,
-        token: &String,
+        method: Platform,
+        url: &str,
+        token: &str,
     ) -> Result<String> {
         log::info!("old token is: {token}");
         log::info!("please scan the QR code or visit the following link to auth corplink:\n{url}");
@@ -318,7 +307,7 @@ impl Client {
             }
         }
         match method {
-            PLATFORM_LARK | PLATFORM_OIDC => {
+            Platform::Lark | Platform::Oidc => {
                 log::info!("press enter if you finish auth");
                 let stdin = io::stdin();
                 stdin.lines().next();
@@ -336,10 +325,10 @@ impl Client {
         for method in resp.auth {
             match method.as_str() {
                 "password" => {
-                    if let Some(password) = &self.conf.password {
+                    if let Some(password) = &self.conf.auth.password {
                         if !password.is_empty() {
                             log::info!("try to login with password");
-                            return self.login_with_password(PLATFORM_CORPLINK).await;
+                            return self.login_with_password(Platform::Corplink).await;
                         }
                     }
                     log::info!("no password provided, trying other methods");
@@ -364,9 +353,9 @@ impl Client {
             if method != "password" {
                 continue;
             }
-            if let Some(password) = &self.conf.password {
+            if let Some(password) = &self.conf.auth.password {
                 return if !password.is_empty() {
-                    self.login_with_password(PLATFORM_LDAP).await
+                    self.login_with_password(Platform::Ldap).await
                 } else {
                     bail!("no password provided")
                 };
@@ -375,11 +364,8 @@ impl Client {
         bail!("failed to login with ldap")
     }
 
-    fn is_platform_or_default(&self, platform: &str) -> bool {
-        if let Some(p) = &self.conf.platform {
-            return p.is_empty() || platform == p;
-        }
-        true
+    fn is_platform_or_default(&self, platform: Platform) -> bool {
+        self.conf.auth.platform.is_none_or(|p| p == platform)
     }
 
     async fn request_otp_code(&mut self) -> Result<String> {
@@ -413,27 +399,30 @@ impl Client {
         tps_login: &HashMap<String, RespTpsLoginMethod>,
         method: &String,
     ) -> Result<String> {
-        if let Some(resp) = tps_login
-            .get(method)
-            .filter(|_| self.is_platform_or_default(method))
-        {
-            log::info!("try to login with third party platform {method}");
-            return self
-                .get_otp_uri_from_tps(method, &resp.login_url, &resp.token)
-                .await;
-        }
-        match method.as_str() {
-            PLATFORM_CORPLINK => {
-                if self.is_platform_or_default(PLATFORM_CORPLINK) {
-                    log::info!("try to login with platform {PLATFORM_CORPLINK}");
-                    return self.corplink_login().await;
+        if let Some(resp) = tps_login.get(method) {
+            match Platform::try_from(method.as_str()) {
+                Ok(platform) if self.is_platform_or_default(platform) => {
+                    log::info!("try to login with third party platform {platform}");
+                    return self
+                        .get_otp_uri_from_tps(platform, &resp.login_url, &resp.token)
+                        .await;
                 }
+                Ok(_) => {}
+                Err(_) if self.conf.auth.platform.is_none() => {
+                    bail!("unsupported platform, please contact the developer");
+                }
+                Err(_) => {}
             }
-            PLATFORM_LDAP => {
-                if self.is_platform_or_default(PLATFORM_LDAP) {
-                    log::info!("try to login with platform {PLATFORM_LDAP}");
-                    return self.ldap_login().await;
-                }
+        }
+
+        match Platform::try_from(method.as_str()) {
+            Ok(Platform::Corplink) if self.is_platform_or_default(Platform::Corplink) => {
+                log::info!("try to login with platform {}", Platform::Corplink);
+                return self.corplink_login().await;
+            }
+            Ok(Platform::Ldap) if self.is_platform_or_default(Platform::Ldap) => {
+                log::info!("try to login with platform {}", Platform::Ldap);
+                return self.ldap_login().await;
             }
             _ => {}
         }
@@ -445,6 +434,7 @@ impl Client {
     async fn login_v1(&mut self) -> Result<()> {
         let password = self
             .conf
+            .auth
             .password
             .as_ref()
             .filter(|p| !p.is_empty())
@@ -453,9 +443,12 @@ impl Client {
         log::info!("try to login with platform feilian_v1");
         let enc = utils::feilian_v1_encrypt_password(&password);
         let mut m = Map::new();
-        m.insert("login_scene".to_string(), json!(PLATFORM_CORPLINK));
+        m.insert(
+            "login_scene".to_string(),
+            json!(Platform::Corplink.as_ref()),
+        );
         m.insert("account_type".to_string(), json!("userid"));
-        m.insert("account".to_string(), json!(&self.conf.username));
+        m.insert("account".to_string(), json!(&self.conf.auth.username));
         m.insert("password".to_string(), json!(enc));
 
         let resp = self
@@ -479,8 +472,9 @@ impl Client {
                         for (k, v) in url.query_pairs() {
                             if k == "secret" {
                                 log::info!("got 2fa token: {}", &v);
-                                self.conf.code = Some(v.to_string());
-                                self.conf.save().await?;
+                                self.conf
+                                    .update(|conf| conf.auth.code = Some(v.to_string()))
+                                    .await?;
                                 break;
                             }
                         }
@@ -505,7 +499,7 @@ impl Client {
 
     // choose right login method and login
     pub async fn login(&mut self) -> Result<()> {
-        if self.conf.platform.as_deref() == Some(PLATFORM_CORPLINK_V1) {
+        if self.conf.auth.platform == Some(Platform::CorplinkV1) {
             return self.login_v1().await;
         }
         let resp = self.get_login_method().await?;
@@ -532,13 +526,14 @@ impl Client {
             for (k, v) in url.query_pairs() {
                 if k == "secret" {
                     log::info!("got 2fa token: {}", &v);
-                    self.conf.code = Some(v.to_string());
-                    self.conf.save().await?;
+                    self.conf
+                        .update(|conf| conf.auth.code = Some(v.to_string()))
+                        .await?;
                     break;
                 }
             }
 
-            if let Some(code) = &self.conf.code {
+            if let Some(code) = &self.conf.auth.code {
                 if !code.is_empty() {
                     return Ok(());
                 }
@@ -568,7 +563,7 @@ impl Client {
     async fn get_corplink_login_method(&mut self) -> Result<RespCorplinkLoginMethod> {
         let mut m = Map::new();
         m.insert("forget_password".to_string(), json!(false));
-        m.insert("user_name".to_string(), json!(&self.conf.username));
+        m.insert("user_name".to_string(), json!(&self.conf.auth.username));
 
         let resp = self
             .request::<RespCorplinkLoginMethod>(ApiName::CorplinkLoginMethod, Some(m))
@@ -577,19 +572,20 @@ impl Client {
             .context("corplink login method response missing data")
     }
 
-    async fn login_with_password(&mut self, platform: &str) -> Result<String> {
+    async fn login_with_password(&mut self, platform: Platform) -> Result<String> {
         let mut password = self
             .conf
+            .auth
             .password
             .as_ref()
             .context("password is required for password login")?
             .clone();
         let mut m = Map::new();
         match platform {
-            PLATFORM_LDAP => {
-                m.insert("platform".to_string(), json!(PLATFORM_LDAP));
+            Platform::Ldap => {
+                m.insert("platform".to_string(), json!(Platform::Ldap.as_ref()));
             }
-            PLATFORM_CORPLINK => {
+            Platform::Corplink => {
                 if password.len() != 64 {
                     let mut sha = sha2::Sha256::new();
                     sha.update(password.as_bytes());
@@ -601,7 +597,7 @@ impl Client {
             }
         }
         m.insert("password".to_string(), json!(password));
-        m.insert("user_name".to_string(), json!(&self.conf.username));
+        m.insert("user_name".to_string(), json!(&self.conf.auth.username));
 
         let resp = self
             .request::<RespLogin>(ApiName::LoginPassword, Some(m))
@@ -624,7 +620,7 @@ impl Client {
         let mut m = Map::new();
         m.insert("forget_password".to_string(), json!(false));
         m.insert("code_type".to_string(), json!("email"));
-        m.insert("user_name".to_string(), json!(&self.conf.username));
+        m.insert("user_name".to_string(), json!(&self.conf.auth.username));
 
         self.request::<Map<String, Value>>(ApiName::RequestEmailCode, Some(m))
             .await?;
@@ -742,6 +738,7 @@ impl Client {
                 .map_err(|e| anyhow!("failed to lock cookie store: {e}"))?;
             let server_url = self
                 .conf
+                .portal
                 .server
                 .as_ref()
                 .context("server url is required to ping vpn")?;
@@ -786,7 +783,7 @@ impl Client {
 
     async fn fetch_peer_info(&mut self, public_key: &String) -> Result<RespWgInfo> {
         let mut otp = String::new();
-        if let Some(code) = &self.conf.code {
+        if let Some(code) = &self.conf.auth.code {
             if !code.is_empty() {
                 let code = utils::b32_decode(code)?;
                 let offset = self.date_offset_sec / TIME_STEP as i32;
@@ -801,8 +798,8 @@ impl Client {
         }
         if otp.is_empty() {
             let is_tps_login = matches!(
-                self.conf.platform.as_deref(),
-                Some(PLATFORM_LARK | PLATFORM_OIDC)
+                self.conf.auth.platform,
+                Some(Platform::Lark | Platform::Oidc)
             );
             if is_tps_login {
                 log::info!("use empty 2fa code (tps login already verified)");
@@ -848,8 +845,8 @@ impl Client {
         let filtered_vpn = vpn_info
             .into_iter()
             .filter(|vpn| {
-                if let Some(server_name) = self.conf.vpn_server_name.clone() {
-                    if vpn.en_name != server_name {
+                if let Some(server_name) = &self.conf.vpn.server_name {
+                    if vpn.en_name != server_name.as_str() {
                         log::info!("skip {}, expect {}", vpn.en_name, server_name);
                         return false;
                     }
@@ -877,13 +874,14 @@ impl Client {
             })
             .collect();
 
-        let vpn = match self.conf.vpn_select_strategy.clone() {
-            Some(strategy) => match strategy.as_str() {
-                STRATEGY_LATENCY => self.get_first_vpn_by_latency(filtered_vpn).await,
-                STRATEGY_DEFAULT => self.get_first_available_vpn(filtered_vpn).await,
-                _ => bail!("unsupported strategy"),
-            },
-            None => self.get_first_available_vpn(filtered_vpn).await,
+        let vpn = match self
+            .conf
+            .vpn
+            .select_strategy
+            .unwrap_or(SelectStrategy::Default)
+        {
+            SelectStrategy::Latency => self.get_first_vpn_by_latency(filtered_vpn).await,
+            SelectStrategy::Default => self.get_first_available_vpn(filtered_vpn).await,
         };
 
         let vpn = match vpn {
@@ -893,35 +891,19 @@ impl Client {
         let vpn_addr = format!("{}:{}", vpn.ip, vpn.vpn_port);
         log::info!("try connect to {}, address {}", vpn.en_name, vpn_addr);
 
-        let key = self
-            .conf
-            .public_key
-            .as_ref()
-            .context("public key missing in config")?
-            .clone();
+        let public_key = self.conf.wireguard.public_key.clone();
+        let private_key = self.conf.wireguard.private_key.clone();
         log::info!("try to get wg conf from remote");
-        let wg_info = self.fetch_peer_info(&key).await?;
+        let wg_info = self.fetch_peer_info(&public_key).await?;
         let mtu = wg_info.setting.vpn_mtu;
         let dns = wg_info.setting.vpn_dns;
         let peer_key = wg_info.public_key;
-        let public_key = self
-            .conf
-            .public_key
-            .as_ref()
-            .context("public key missing in config")?
-            .clone();
-        let private_key = self
-            .conf
-            .private_key
-            .as_ref()
-            .context("private key missing in config")?
-            .clone();
         let ip_mask = wg_info.ip_mask.parse::<u32>().context("invalid ip mask")?;
         let address = format!("{}/{}", wg_info.ip, ip_mask);
         let address6 = (!wg_info.ipv6.is_empty())
             .then_some(format!("{}/128", wg_info.ipv6))
             .unwrap_or("".into());
-        let mut allowed_ips = match self.conf.route_mode.clone().unwrap_or_default() {
+        let mut allowed_ips = match self.conf.vpn.route_mode {
             crate::config::RouteMode::Split => {
                 log::info!("route_mode = split");
                 [
@@ -964,7 +946,7 @@ impl Client {
         // whole range out of each allowed_ip, even when allowed_ip is a larger
         // supernet such as "0.0.0.0/0" — which expands to a minimal set of
         // smaller CIDRs covering "allowed minus disallowed".
-        if let Some(disallowed) = self.conf.vpn_disallowed_routes.as_ref() {
+        if let Some(disallowed) = self.conf.vpn.disallowed_routes.as_ref() {
             if !disallowed.is_empty() {
                 let before = allowed_ips.len();
                 for d in disallowed {
@@ -1022,7 +1004,7 @@ impl Client {
             allowed_ips.len(),
             allowed_ips
         );
-        let auto_setup_routes = self.conf.auto_setup_routes.unwrap_or(true);
+        let auto_setup_routes = self.conf.vpn.auto_setup_routes;
         let routes = if auto_setup_routes {
             allowed_ips.clone()
         } else {
@@ -1072,9 +1054,9 @@ impl Client {
         m.insert("public_key".to_string(), json!(conf.public_key));
         m.insert(
             "mode".to_string(),
-            json!(match self.conf.route_mode.clone().unwrap_or_default() {
-                crate::config::RouteMode::Split => "Split",
-                crate::config::RouteMode::Full => "Full",
+            json!(match self.conf.vpn.route_mode {
+                RouteMode::Split => "Split",
+                RouteMode::Full => "Full",
             }),
         );
         m.insert("type".to_string(), json!("100"));
@@ -1098,9 +1080,9 @@ impl Client {
         m.insert("public_key".to_string(), json!(wg_conf.public_key));
         m.insert(
             "mode".to_string(),
-            json!(match self.conf.route_mode.clone().unwrap_or_default() {
-                crate::config::RouteMode::Split => "Split",
-                crate::config::RouteMode::Full => "Full",
+            json!(match self.conf.vpn.route_mode {
+                RouteMode::Split => "Split",
+                RouteMode::Full => "Full",
             }),
         );
         m.insert("type".to_string(), json!("101"));
@@ -1126,7 +1108,7 @@ impl Client {
         // /api/logout validates a csrf-token header (double-submit against the
         // cookie). the token is only known after login, so read it from the
         // cookie store here rather than relying on the default headers.
-        if let Some(server) = self.conf.server.as_ref() {
+        if let Some(server) = self.conf.portal.server.as_ref() {
             if let Ok(server_url) = Url::parse(server) {
                 if let Some(domain) = server_url.domain().or_else(|| server_url.host_str()) {
                     let token = {

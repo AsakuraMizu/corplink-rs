@@ -119,7 +119,7 @@ $env:RUST_LOG="debug"; .\corplink-rs.exe config.json
 
 ## macos 特殊说明
 
-macos 要求 tun 设备的名称满足正则表达式 `utun[0-9]*` ，因此需要将配置文件中的 `interface_name` 改为符合正则的名字，例如 `utun12345`  
+macos 要求 tun 设备的名称满足正则表达式 `utun[0-9]*` ，因此需要将配置文件中的 `wireguard.interface_name` 改为符合正则的名字，例如 `utun12345`
 另外， `utun` 后的数字类型应该是 `int16` ，如果大于 `32767` 会报错 `Failed to create TUN device: invalid argument` 。具体参考 [#46](https://github.com/PinkD/corplink-rs/issues/46)
 
 ## log level 配置
@@ -132,12 +132,18 @@ RUST_LOG=debug ./corplink-rs config.json
 
 # 配置文件实例
 
+配置现在按用途分组。旧版根字段仍可读取；程序启动后会把旧结构自动写回为新结构。
+
 最小配置
 
 ```json
 {
-  "company_name": "company code name",
-  "username": "your_name"
+  "portal": {
+    "company_name": "company code name"
+  },
+  "auth": {
+    "username": "your_name"
+  }
 }
 ```
 
@@ -145,10 +151,14 @@ RUST_LOG=debug ./corplink-rs config.json
 
 ```json
 {
-  "company_name": "company code name",
-  "username": "your_name",
-  "password": "your_pass",
-  "platform": "ldap"
+  "portal": {
+    "company_name": "company code name"
+  },
+  "auth": {
+    "username": "your_name",
+    "password": "your_pass",
+    "platform": "ldap"
+  }
 }
 ```
 
@@ -156,81 +166,95 @@ RUST_LOG=debug ./corplink-rs config.json
 
 ```json
 {
-  "company_name": "company code name",
-  "username": "your_name",
-  // support sha256sum hashed pass if you don't use ldap, will ask email for code if not provided
-  "password": "your_pass",
-  // default is feilian, can be feilian/ldap/lark(aka feishu)/OIDC
-  // dingtalk/aad/weixin is not supported yet
-  "platform": "ldap",
-  "code": "totp code",
-  // default is DollarOS(not CentOS)
-  "device_name": "any string to describe your device",
-  "device_id": "md5 of device_name or any string with same format",
-  "public_key": "wg public key, can be generated from private key",
-  "private_key": "wg private key",
-  "server": "server link",
-  // enable wg-go log to debug uapi problems
-  "debug_wg": true,
-  // will use corplink as interface name
-  "interface_name": "corplink",
-  // will use the specified server to connect, for example 'HK-1'
-  // name from server list
-  "vpn_server_name": "hk",
-  // latency/default
-  // latency: choose the server with the lowest latency
-  // default: choose the first available server
-  "vpn_select_strategy": "latency",
-  // use vpn dns (macOS: networksetup; Linux: rename /etc/resolv.conf aside
-  //   and write a new one with the VPN-provided nameserver)
-  // NOTE: if process doesn't exit gracefully, your dns may not be restored
-  "use_vpn_dns": false,
-  // optional: filename for the Linux backup of /etc/resolv.conf.
-  // Default "resolv.conf.corplink", always placed next to /etc/resolv.conf.
-  // macOS ignores this field.
-  "dns_backup_filename": null,
-  // automatically setup system routes (default: true)
-  // set to false if you want to manually configure routes
-  "auto_setup_routes": true,
-  // route mode: "split" (default) or "full"
-  // - split: use intranet routes from server (same as official split mode)
-  // - full:  use full-tunnel routes from server
-  //          often combined with "auto_setup_routes": false in container/gateway setups
-  "route_mode": "split",
-  // optional: list of CIDRs to carve out of AllowedIPs (and system routes).
-  // applied as CIDR subtraction: each entry is subtracted from every route
-  // returned by the server, so listing a smaller range like "10.68.0.0/16"
-  // still punches a hole even when the server returns a supernet like
-  // "0.0.0.0/0" (full-tunnel). useful for keeping local LAN traffic off the
-  // VPN, and for excluding the VPN peer endpoint IP to avoid a routing loop
-  // that would otherwise black-hole all traffic.
-  "vpn_disallowed_routes": ["192.168.1.0/24"],
-  // optional: run entirely in userspace (gVisor netstack) and expose a SOCKS5
-  // proxy at this address instead of creating a kernel TUN device. No system
-  // interface, routes, DNS changes or root privileges are required.
-  // supports TCP CONNECT and UDP ASSOCIATE; hostnames are resolved in-tunnel.
-  "socks5_listen": "0.0.0.0:1080",
-  // optional: require SOCKS5 username/password auth (RFC 1929) on the proxy.
-  // when socks5_username is empty/unset, the proxy accepts connections with no auth.
-  "socks5_username": "user",
-  "socks5_password": "pass"
+  "portal": {
+    "company_name": "company code name",
+    "server": "server link"
+  },
+  "auth": {
+    "username": "your_name",
+    // support sha256sum hashed pass if you don't use ldap, will ask email for code if not provided
+    "password": "your_pass",
+    // default is feilian, can be feilian/feilian_v1/ldap/lark(aka feishu)/OIDC
+    // dingtalk/aad/weixin is not supported yet
+    "platform": "ldap",
+    "code": "totp code"
+  },
+  "device": {
+    // default is DollarOS(not CentOS)
+    "name": "any string to describe your device",
+    "id": "md5 of device.name or any string with same format"
+  },
+  "wireguard": {
+    // will use corplink as interface name
+    "interface_name": "corplink",
+    "public_key": "wg public key, can be generated from private key",
+    "private_key": "wg private key",
+    // enable wg-go log to debug uapi problems
+    "debug": true
+  },
+  "vpn": {
+    // will use the specified server to connect, for example 'HK-1'
+    // name from server list
+    "server_name": "hk",
+    // latency/default
+    // latency: choose the server with the lowest latency
+    // default: choose the first available server
+    "select_strategy": "latency",
+    // automatically setup system routes (default: true)
+    // set to false if you want to manually configure routes
+    "auto_setup_routes": true,
+    // route mode: "split" (default) or "full"
+    // - split: use intranet routes from server (same as official split mode)
+    // - full:  use full-tunnel routes from server
+    //          often combined with "auto_setup_routes": false in container/gateway setups
+    "route_mode": "split",
+    // optional: list of CIDRs to carve out of AllowedIPs (and system routes).
+    // applied as CIDR subtraction: each entry is subtracted from every route
+    // returned by the server, so listing a smaller range like "10.68.0.0/16"
+    // still punches a hole even when the server returns a supernet like
+    // "0.0.0.0/0" (full-tunnel). useful for keeping local LAN traffic off the
+    // VPN, and for excluding the VPN peer endpoint IP to avoid a routing loop
+    // that would otherwise black-hole all traffic.
+    "disallowed_routes": ["192.168.1.0/24"]
+  },
+  "dns": {
+    // use vpn dns (macOS: networksetup; Linux: rename /etc/resolv.conf aside
+    //   and write a new one with the VPN-provided nameserver)
+    // NOTE: if process doesn't exit gracefully, your dns may not be restored
+    "enabled": false,
+    // optional: filename for the Linux backup of /etc/resolv.conf.
+    // Default "resolv.conf.corplink", always placed next to /etc/resolv.conf.
+    // macOS ignores this field.
+    "backup_filename": null
+  },
+  "socks5": {
+    // optional: run entirely in userspace (gVisor netstack) and expose a SOCKS5
+    // proxy at this address instead of creating a kernel TUN device. No system
+    // interface, routes, DNS changes or root privileges are required.
+    // supports TCP CONNECT and UDP ASSOCIATE; hostnames are resolved in-tunnel.
+    "listen": "0.0.0.0:1080",
+    // optional: require SOCKS5 username/password auth (RFC 1929) on the proxy.
+    // when username is empty/unset, the proxy accepts connections with no auth.
+    "username": "user",
+    "password": "pass"
+  }
 }
 ```
 
 ## SOCKS5 / netstack 模式
 
-设置 `socks5_listen` 后，corplink-rs 不再创建内核 TUN 网卡，而是用 [wg-go][2] 的 gVisor netstack 在用户态跑 WireGuard，并在该地址上暴露一个 SOCKS5 代理：
+设置 `socks5.listen` 后，corplink-rs 不再创建内核 TUN 网卡，而是用 [wg-go][2] 的 gVisor netstack 在用户态跑 WireGuard，并在该地址上暴露一个 SOCKS5 代理：
 
 - **无需 root / 不改系统路由和 DNS / 不建网卡**，适合容器、无权限环境或只想给单个应用走 VPN 的场景
 - 支持 TCP `CONNECT` 和 UDP `ASSOCIATE`，域名在隧道内解析（用 `--socks5-hostname` 让客户端把 DNS 也交给代理）
-- 可选用户名/密码认证（RFC 1929）：设置 `socks5_username`（及 `socks5_password`）即开启；留空则免认证
+- 可选用户名/密码认证（RFC 1929）：设置 `socks5.username`（及 `socks5.password`）即开启；留空则免认证
 
 ```sh
 # 例：通过代理访问内网
 curl --socks5-hostname user:pass@127.0.0.1:1080 https://intranet.example.com/
 ```
 
-此模式下 `interface_name`、`use_vpn_dns`、`auto_setup_routes` 等与系统网卡/路由相关的设置不生效。
+此模式下 `wireguard.interface_name`、`dns.enabled`、`vpn.auto_setup_routes` 等与系统网卡/路由相关的设置不生效。
 
 # 原理和分析
 

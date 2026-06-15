@@ -106,6 +106,7 @@ impl ApiUrl {
         Ok(ApiUrl {
             user_param: UserUrlParam {
                 url: conf
+                    .portal
                     .server
                     .clone()
                     .context("server url missing in config")?,

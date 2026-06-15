@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd)]
 pub enum State {
     Init,
     Login,

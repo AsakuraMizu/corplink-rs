@@ -2,8 +2,9 @@ use std::ffi::{c_void, CStr, CString};
 use std::time;
 
 use anyhow::{anyhow, Context, Result};
+use serde::Serialize;
 
-use crate::{config, utils};
+use crate::utils;
 
 #[allow(clippy::all)]
 #[allow(
@@ -14,6 +15,26 @@ use crate::{config, utils};
 )]
 mod libwg {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
+
+#[derive(Serialize, Clone)]
+pub struct WgConf {
+    // standard wg conf
+    pub address: String,
+    pub address6: String,
+    pub peer_address: String,
+    pub mtu: u32,
+    pub public_key: String,
+    pub private_key: String,
+    pub peer_key: String,
+    pub allowed_ips: Vec<String>,
+    pub routes: Vec<String>,
+
+    // extra confs
+    pub dns: String,
+
+    // corplink confs
+    pub protocol: i32,
 }
 
 fn start_wg(log_level: i32, protocol: i32, interface_name: &str) -> Result<i32> {
@@ -90,7 +111,7 @@ pub fn start_wg_go(name: &str, protocol: i32, with_log: bool) -> Result<()> {
 // start wg-corplink in userspace netstack mode and expose a SOCKS5 proxy.
 // no kernel TUN device, no system routes/dns and no root are needed.
 pub fn start_wg_go_netstack(
-    conf: &config::WgConf,
+    conf: &WgConf,
     socks_listen: &str,
     socks_user: &str,
     socks_pass: &str,
@@ -128,7 +149,7 @@ pub struct UAPIClient {
 }
 
 impl UAPIClient {
-    pub async fn config_wg(&mut self, conf: &config::WgConf) -> Result<()> {
+    pub async fn config_wg(&mut self, conf: &WgConf) -> Result<()> {
         let mut buff = String::from("set=1\n");
         // standard wg-go uapi operations
         // see https://www.wireguard.com/xplatform/#configuration-protocol
@@ -181,7 +202,7 @@ impl UAPIClient {
     // configure wg for netstack mode. only the standard wg-go uapi operations
     // are sent: the interface address/mtu and the device "up" state are handled
     // by netstack at creation time, and there are no system routes to install.
-    pub async fn config_wg_netstack(&mut self, conf: &config::WgConf) -> Result<()> {
+    pub async fn config_wg_netstack(&mut self, conf: &WgConf) -> Result<()> {
         let mut buff = String::from("set=1\n");
         let private_key = utils::b64_decode_to_hex(&conf.private_key)?;
         let public_key = utils::b64_decode_to_hex(&conf.peer_key)?;

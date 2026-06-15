@@ -1,6 +1,10 @@
 {
-    "company_name": "company code name",
-    "username": "your_name",
-    "password": "your_pass",
-    "platform": "feilian"
+    "portal": {
+        "company_name": "company code name"
+    },
+    "auth": {
+        "username": "your_name",
+        "password": "your_pass",
+        "platform": "feilian"
+    }
 }
