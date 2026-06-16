@@ -1,0 +1,48 @@
+# CI/local-only PKGBUILD.
+# The AUR PKGBUILD is maintained outside this repository.
+
+pkgname=corplink-rs
+pkgver=5.4
+pkgrel=1
+pkgdesc='Corplink client written in Rust'
+arch=('x86_64')
+url='https://github.com/PinkD/corplink-rs'
+license=('GPL-2.0-only')
+makedepends=('cargo' 'go' 'clang' 'git')
+source=(
+  "corplink-rs::git+file://${CORPLINK_SOURCE_REPO}#commit=${CORPLINK_SOURCE_REV}"
+  "wireguard-go::git+https://github.com/PinkD/wireguard-go"
+)
+sha256sums=(
+  'SKIP'
+  'SKIP'
+)
+backup=('etc/corplink/config.json')
+options=('!debug')
+
+: "${CORPLINK_SOURCE_REPO:?}"
+: "${CORPLINK_SOURCE_REV:?}"
+
+prepare() {
+  cd "$srcdir/corplink-rs"
+  git submodule init
+  git config submodule.libwg/wireguard-go.url "$srcdir/wireguard-go"
+  git -c protocol.file.allow=always submodule update
+}
+
+build() {
+  cd "$srcdir/corplink-rs/libwg/wireguard-go"
+  make libwg
+  cp libwg.* "$srcdir/corplink-rs/libwg/"
+
+  cd "$srcdir/corplink-rs"
+  cargo build --release --locked
+}
+
+package() {
+  cd "$srcdir/corplink-rs"
+  install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+  install -Dm600 "config.example.json" "$pkgdir/etc/corplink/config.json"
+  install -Dm644 "systemd/$pkgname.service" "$pkgdir/usr/lib/systemd/system/$pkgname.service"
+  install -Dm644 "systemd/$pkgname@.service" "$pkgdir/usr/lib/systemd/system/$pkgname@.service"
+}

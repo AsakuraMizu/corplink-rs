@@ -1,0 +1,4 @@
+*
+!.gitignore
+!PKGBUILD
+!build-arch-package.sh

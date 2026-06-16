@@ -4,9 +4,6 @@
 # JetBrains IDE file
 /.idea/
 
-# pack build output
-/pack/test/
-
 # config files
 config.json
 
