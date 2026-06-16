@@ -319,6 +319,7 @@ dependencies = [
  "cookie_store",
  "env_logger",
  "futures",
+ "glob",
  "hex",
  "hmac-sha1",
  "httpdate",

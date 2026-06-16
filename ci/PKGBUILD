@@ -31,10 +31,6 @@ prepare() {
 }
 
 build() {
-  cd "$srcdir/corplink-rs/libwg/wireguard-go"
-  make libwg
-  cp libwg.* "$srcdir/corplink-rs/libwg/"
-
   cd "$srcdir/corplink-rs"
   cargo build --release --locked
 }

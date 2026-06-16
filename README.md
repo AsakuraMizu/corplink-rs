@@ -19,13 +19,9 @@ pacman -U corplink-rs-4.1-1-x86_64.pkg.tar.zst
 ### linux/macos
 
 ```bash
-git clone https://github.com/PinkD/corplink-rs --depth 1
+git clone --recurse-submodules https://github.com/PinkD/corplink-rs
 cd corplink-rs
-# build libwg
-cd libwg
-./build.sh
-# if you are using Windows, you can clone and build libwg maunally
-# ref: wireguard-go/Makefile:libwg
+# 如果已经克隆过仓库，请执行：git submodule update --init --recursive
 
 cargo build --release
 # install corplink-rs to your PATH
@@ -36,23 +32,18 @@ mv target/release/corplink-rs /usr/bin/
 
 **前提**: 需要 Go (≥1.22)、GCC (MinGW-w64)、make、Rust (GNU 工具链)。
 
-安装工具链后，在 **PowerShell** 中执行：
+在仓库根目录中执行：
 
 ```powershell
-# 1. 构建 libwg（生成 libwg.a + libwg.h）
-cd libwg
-.\build.ps1
-
-# 2. 构建 Rust 项目
-cd ..
+git submodule update --init --recursive
 rustup toolchain install stable-gnu
 rustup default stable-x86_64-pc-windows-gnu
 cargo build --release
 ```
 
-> 编译的 `build.ps1` 会调用 `make libwg`，该目标会以 `CGO_ENABLED=1` 编译 Go 代码。
+> Cargo 会通过 `build.rs` 自动在 `libwg/wireguard-go` 中执行 `make libwg`，生成并链接 libwg。
 > MinGW GCC 需要在 PATH 中，且 make 需要支持 bash 风格环境变量语法。
-> 也可在 MSYS2 UCRT64 环境中执行 `./build.sh`（同样需要 Go + GCC）。
+> 也可在 MSYS2 UCRT64 环境中执行上述 Cargo 构建流程（同样需要 Go + GCC）。
 
 # 用法
 
