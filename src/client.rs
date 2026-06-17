@@ -1034,46 +1034,6 @@ impl Client {
         Ok(wg_conf)
     }
 
-    pub async fn keep_alive_vpn(&mut self, conf: &WgConf, interval: u64) {
-        loop {
-            log::info!("keep alive");
-            match self.report_vpn_status(conf).await {
-                Ok(_) => (),
-                Err(err) => {
-                    log::warn!("keep alive error: {}", err);
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(interval)).await;
-        }
-    }
-
-    pub async fn report_vpn_status(&mut self, conf: &WgConf) -> Result<()> {
-        let mut m = Map::new();
-        m.insert("ip".to_string(), json!(conf.address));
-        m.insert("public_key".to_string(), json!(conf.public_key));
-        m.insert(
-            "mode".to_string(),
-            json!(match self.conf.vpn.route_mode {
-                RouteMode::Split => "Split",
-                RouteMode::Full => "Full",
-            }),
-        );
-        m.insert("type".to_string(), json!("100"));
-
-        let resp = self
-            .request::<Map<String, Value>>(ApiName::KeepAliveVPN, Some(m))
-            .await?;
-        match resp.code {
-            0 => Ok(()),
-            _ => bail!(format!(
-                "failed to report connection with error {}: {}",
-                resp.code,
-                resp.message.unwrap_or_default()
-            )),
-        }
-    }
-
     pub async fn disconnect_vpn(&mut self, wg_conf: &WgConf) -> Result<()> {
         let mut m = Map::new();
         m.insert("ip".to_string(), json!(wg_conf.address));

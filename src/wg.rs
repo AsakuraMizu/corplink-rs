@@ -49,6 +49,7 @@ fn stop_wg() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_wg_netstack(
     log_level: i32,
     protocol: i32,

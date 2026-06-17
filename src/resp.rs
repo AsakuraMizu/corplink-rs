@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[derive(serde::Deserialize, Debug)]
 pub struct Resp<T> {
     pub code: i32,

@@ -42,7 +42,6 @@ pub enum ApiName {
 
     PingVPN,
     ConnectVPN,
-    KeepAliveVPN,
     DisconnectVPN,
     Otp,
     Logout,
@@ -98,7 +97,6 @@ impl ApiUrl {
         api_template.insert(ApiName::ListVPN, Template::new(URL_LIST_VPN));
         api_template.insert(ApiName::PingVPN, Template::new(URL_PING_VPN_HOST));
         api_template.insert(ApiName::ConnectVPN, Template::new(URL_FETCH_PEER_INFO));
-        api_template.insert(ApiName::KeepAliveVPN, Template::new(URL_OPERATE_VPN));
         api_template.insert(ApiName::DisconnectVPN, Template::new(URL_OPERATE_VPN));
         api_template.insert(ApiName::Otp, Template::new(URL_OTP));
         api_template.insert(ApiName::Logout, Template::new(URL_LOGOUT));
@@ -140,7 +138,6 @@ impl ApiUrl {
 
             ApiName::PingVPN => self.api_template[name].render(vpn_param),
             ApiName::ConnectVPN => self.api_template[name].render(vpn_param),
-            ApiName::KeepAliveVPN => self.api_template[name].render(vpn_param),
             ApiName::DisconnectVPN => self.api_template[name].render(vpn_param),
         }
     }

@@ -192,11 +192,6 @@ async fn run() -> Result<()> {
     tokio::select! {
         _ = wait_for_shutdown_signal() => {},
 
-        // keep alive
-        // _ = c.keep_alive_vpn(&wg_conf, 60) => {
-        //     exit_code = ETIMEDOUT;
-        // },
-
         // check wg handshake and exit if timeout
         _ = async {
             uapi.check_wg_connection().await;
