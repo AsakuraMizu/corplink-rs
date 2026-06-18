@@ -19,7 +19,7 @@ use sha2::Digest;
 
 use crate::api::{ApiName, ApiUrl, URL_GET_COMPANY};
 use crate::config::{ConfigStore, Platform, RouteMode, SelectStrategy};
-use crate::qrcode::TerminalQrCode;
+use crate::qrcode::render_qr_code;
 use crate::resp::*;
 use crate::state::State;
 use crate::totp::{totp_offset, TIME_STEP};
@@ -299,13 +299,16 @@ impl Client {
         token: &str,
     ) -> Result<String> {
         log::info!("old token is: {token}");
-        log::info!("please scan the QR code or visit the following link to auth corplink:\n{url}");
-        match TerminalQrCode::from_bytes(url.as_bytes()) {
-            Ok(qr) => qr.print(),
+        match render_qr_code(url.as_bytes()) {
+            Ok(qr) => log::info!(
+                "please scan the QR code or visit the following link to auth corplink:\n{url}\n{qr}"
+            ),
             Err(e) => {
+                log::info!("please visit the following link to auth corplink:\n{url}");
                 log::warn!("failed to generate qr code: {e}");
             }
         }
+
         match method {
             Platform::Lark | Platform::Oidc => {
                 log::info!("press enter if you finish auth");
