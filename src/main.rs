@@ -4,6 +4,7 @@ mod config;
 mod dns;
 mod qrcode;
 mod resp;
+mod routes;
 mod state;
 mod template;
 mod totp;

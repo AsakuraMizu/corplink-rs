@@ -223,7 +223,10 @@ pub struct VpnConfig {
     pub select_strategy: Option<SelectStrategy>,
     pub auto_setup_routes: bool,
     pub route_mode: RouteMode,
-    pub disallowed_routes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_routes: Vec<ipnet::IpNet>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub extra_routes: Vec<ipnet::IpNet>,
 }
 
 impl Default for VpnConfig {
@@ -233,7 +236,8 @@ impl Default for VpnConfig {
             select_strategy: None,
             auto_setup_routes: true,
             route_mode: RouteMode::default(),
-            disallowed_routes: None,
+            disallowed_routes: Vec::new(),
+            extra_routes: Vec::new(),
         }
     }
 }
@@ -592,6 +596,12 @@ mod tests {
         assert_eq!(config.vpn.route_mode, RouteMode::Full);
         assert_eq!(config.vpn.select_strategy, Some(SelectStrategy::Latency));
         assert!(!config.vpn.auto_setup_routes);
+        assert_eq!(config.vpn.disallowed_routes.len(), 1);
+        assert_eq!(
+            config.vpn.disallowed_routes[0].to_string(),
+            "192.168.1.0/24"
+        );
+        assert!(config.vpn.extra_routes.is_empty());
         assert!(config.dns.enabled);
         assert_eq!(config.dns.mode, DnsMode::Auto);
         assert!(config.dns.domains.is_empty());
@@ -612,6 +622,10 @@ mod tests {
         assert_eq!(migrated["wireguard"]["interface_name"], "wg-acme");
         assert_eq!(migrated["vpn"]["route_mode"], "full");
         assert_eq!(migrated["vpn"]["select_strategy"], "latency");
+        assert_eq!(
+            migrated["vpn"]["disallowed_routes"],
+            json!(["192.168.1.0/24"])
+        );
         assert_eq!(migrated["dns"]["enabled"], true);
         assert_eq!(migrated["dns"]["mode"], "auto");
         assert_eq!(migrated["dns"]["domains"], json!([]));
@@ -638,6 +652,8 @@ mod tests {
         assert!(!config.wireguard.private_key.is_empty());
         assert!(config.vpn.auto_setup_routes);
         assert_eq!(config.vpn.route_mode, RouteMode::Split);
+        assert!(config.vpn.disallowed_routes.is_empty());
+        assert!(config.vpn.extra_routes.is_empty());
         assert!(!config.dns.enabled);
         assert_eq!(config.dns.mode, DnsMode::Auto);
         assert!(config.dns.domains.is_empty());
@@ -702,6 +718,29 @@ mod tests {
 
         assert_eq!(config.auth.platform, None);
         assert!(needs_save);
+        let normalized = serde_json::to_value(&config).expect("config should serialize");
+        assert!(normalized["vpn"].get("disallowed_routes").is_none());
+        assert!(normalized["vpn"].get("extra_routes").is_none());
+    }
+
+    #[test]
+    fn invalid_extra_route_cidr_fails_current_config_parse() {
+        let err = Config::from_value(json!({
+            "portal": {
+                "company_name": "nested-company"
+            },
+            "auth": {
+                "username": "nested-user"
+            },
+            "vpn": {
+                "extra_routes": ["bad-cidr"]
+            }
+        }))
+        .expect_err("invalid extra route CIDR should fail current config parsing");
+
+        assert!(err
+            .to_string()
+            .contains("failed to parse current config schema"));
     }
 
     #[test]
