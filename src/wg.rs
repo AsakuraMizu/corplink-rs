@@ -31,7 +31,8 @@ pub struct WgConf {
     pub routes: Vec<String>,
 
     // extra confs
-    pub dns: String,
+    pub dns_servers: Vec<String>,
+    pub dns_domains: Vec<String>,
 
     // corplink confs
     pub protocol: i32,
@@ -54,14 +55,14 @@ fn start_wg_netstack(
     log_level: i32,
     protocol: i32,
     addresses: &str,
-    dns: &str,
+    dns_servers: &str,
     socks_listen: &str,
     socks_user: &str,
     socks_pass: &str,
     mtu: i32,
 ) -> Result<i32> {
     let c_addresses = CString::new(addresses).context("addresses contains null character")?;
-    let c_dns = CString::new(dns).context("dns contains null character")?;
+    let c_dns = CString::new(dns_servers).context("dns_servers contains null character")?;
     let c_socks = CString::new(socks_listen).context("socks_listen contains null character")?;
     let c_user = CString::new(socks_user).context("socks_user contains null character")?;
     let c_pass = CString::new(socks_pass).context("socks_pass contains null character")?;
@@ -129,11 +130,12 @@ pub fn start_wg_go_netstack(
         addrs.push(conf.address6.clone());
     }
     let addresses = addrs.join(",");
+    let dns_servers = conf.dns_servers.join(",");
     let ret = start_wg_netstack(
         log_level,
         conf.protocol,
         &addresses,
-        &conf.dns,
+        &dns_servers,
         socks_listen,
         socks_user,
         socks_pass,

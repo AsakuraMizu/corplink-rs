@@ -897,6 +897,18 @@ impl Client {
         let wg_info = self.fetch_peer_info(&public_key).await?;
         let mtu = wg_info.setting.vpn_mtu;
         let dns = wg_info.setting.vpn_dns;
+        let dns_backup = wg_info.setting.vpn_dns_backup;
+        let dns_servers = [dns, dns_backup]
+            .into_iter()
+            .filter(|server| !server.is_empty())
+            .collect::<Vec<_>>();
+        let dns_domains = wg_info.setting.vpn_dns_domain_split.unwrap_or_default();
+        log::info!("server returned dns servers: {:?}", dns_servers);
+        log::info!(
+            "server returned {} split dns domains: {:?}",
+            dns_domains.len(),
+            dns_domains
+        );
         let peer_key = wg_info.public_key;
         let ip_mask = wg_info.ip_mask.parse::<u32>().context("invalid ip mask")?;
         let address = format!("{}/{}", wg_info.ip, ip_mask);
@@ -1023,7 +1035,8 @@ impl Client {
             peer_key,
             allowed_ips,
             routes,
-            dns,
+            dns_servers,
+            dns_domains,
             protocol: match vpn.protocol_mode {
                 // tcp
                 1 => 1,

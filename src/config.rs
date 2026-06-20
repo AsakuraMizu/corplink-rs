@@ -2,7 +2,7 @@ use std::fmt;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::skip_serializing_none;
@@ -238,12 +238,65 @@ impl Default for VpnConfig {
     }
 }
 
-#[skip_serializing_none]
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
-#[serde(default)]
+#[derive(Serialize, Deserialize, Copy, Clone, Debug, Eq, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DnsMode {
+    #[default]
+    Auto,
+    Global,
+    Split,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(try_from = "DnsConfigInput")]
 pub struct DnsConfig {
     pub enabled: bool,
-    pub backup_filename: Option<String>,
+    pub mode: DnsMode,
+    pub domains: Vec<String>,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: DnsMode::Auto,
+            domains: Vec::new(),
+        }
+    }
+}
+
+impl TryFrom<DnsConfigInput> for DnsConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(input: DnsConfigInput) -> std::result::Result<Self, Self::Error> {
+        if input.mode == DnsMode::Global && !input.domains.is_empty() {
+            bail!("dns.domains requires dns.mode to be auto or split");
+        }
+
+        Ok(Self {
+            enabled: input.enabled,
+            mode: input.mode,
+            domains: input.domains,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct DnsConfigInput {
+    enabled: bool,
+    mode: DnsMode,
+    domains: Vec<String>,
+}
+
+impl Default for DnsConfigInput {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: DnsMode::Auto,
+            domains: Vec::new(),
+        }
+    }
 }
 
 #[skip_serializing_none]
@@ -407,7 +460,6 @@ struct LegacyConfig {
     vpn_server_name: Option<String>,
     vpn_select_strategy: Option<SelectStrategy>,
     use_vpn_dns: Option<bool>,
-    dns_backup_filename: Option<String>,
     auto_setup_routes: Option<bool>,
     route_mode: Option<RouteMode>,
     vpn_disallowed_routes: Option<Vec<String>>,
@@ -448,7 +500,6 @@ impl LegacyConfig {
             },
             "dns": {
                 "enabled": self.use_vpn_dns,
-                "backup_filename": self.dns_backup_filename,
             },
             "socks5": {
                 "listen": self.socks5_listen,
@@ -517,7 +568,6 @@ mod tests {
                 "vpn_server_name": "HK-1",
                 "vpn_select_strategy": "latency",
                 "use_vpn_dns": true,
-                "dns_backup_filename": "resolv.conf.backup",
                 "auto_setup_routes": false,
                 "route_mode": "full",
                 "vpn_disallowed_routes": ["192.168.1.0/24"],
@@ -542,10 +592,9 @@ mod tests {
         assert_eq!(config.vpn.route_mode, RouteMode::Full);
         assert_eq!(config.vpn.select_strategy, Some(SelectStrategy::Latency));
         assert!(!config.vpn.auto_setup_routes);
-        assert_eq!(
-            config.dns.backup_filename.as_deref(),
-            Some("resolv.conf.backup")
-        );
+        assert!(config.dns.enabled);
+        assert_eq!(config.dns.mode, DnsMode::Auto);
+        assert!(config.dns.domains.is_empty());
         assert_eq!(config.socks5.listen.as_deref(), Some("127.0.0.1:1080"));
         assert_eq!(config.session.state, Some(State::Login));
 
@@ -564,6 +613,8 @@ mod tests {
         assert_eq!(migrated["vpn"]["route_mode"], "full");
         assert_eq!(migrated["vpn"]["select_strategy"], "latency");
         assert_eq!(migrated["dns"]["enabled"], true);
+        assert_eq!(migrated["dns"]["mode"], "auto");
+        assert_eq!(migrated["dns"]["domains"], json!([]));
         assert_eq!(migrated["socks5"]["listen"], "127.0.0.1:1080");
 
         std::fs::remove_file(path).expect("temporary config should be removed");
@@ -588,7 +639,8 @@ mod tests {
         assert!(config.vpn.auto_setup_routes);
         assert_eq!(config.vpn.route_mode, RouteMode::Split);
         assert!(!config.dns.enabled);
-        assert!(config.dns.backup_filename.is_none());
+        assert_eq!(config.dns.mode, DnsMode::Auto);
+        assert!(config.dns.domains.is_empty());
 
         let legacy = LegacyConfig {
             company_name: "acme".to_owned(),
@@ -607,7 +659,6 @@ mod tests {
             vpn_server_name: None,
             vpn_select_strategy: None,
             use_vpn_dns: None,
-            dns_backup_filename: None,
             auto_setup_routes: None,
             route_mode: None,
             vpn_disallowed_routes: None,
@@ -651,6 +702,28 @@ mod tests {
 
         assert_eq!(config.auth.platform, None);
         assert!(needs_save);
+    }
+
+    #[test]
+    fn global_dns_rejects_user_domains() {
+        let err = Config::from_value(json!({
+            "portal": {
+                "company_name": "nested-company"
+            },
+            "auth": {
+                "username": "nested-user"
+            },
+            "dns": {
+                "mode": "global",
+                "domains": ["corp.example"]
+            }
+        }))
+        .expect_err("global dns should reject user domains");
+
+        assert!(err
+            .to_string()
+            .contains("failed to parse current config schema"));
+        assert!(format!("{err:#}").contains("dns.domains requires dns.mode"));
     }
 
     #[test]

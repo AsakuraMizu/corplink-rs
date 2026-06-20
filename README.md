@@ -209,14 +209,18 @@ RUST_LOG=debug ./corplink-rs config.json
     "disallowed_routes": ["192.168.1.0/24"]
   },
   "dns": {
-    // use vpn dns (macOS: networksetup; Linux: rename /etc/resolv.conf aside
-    //   and write a new one with the VPN-provided nameserver)
-    // NOTE: if process doesn't exit gracefully, your dns may not be restored
-    "enabled": false,
-    // optional: filename for the Linux backup of /etc/resolv.conf.
-    // Default "resolv.conf.corplink", always placed next to /etc/resolv.conf.
-    // macOS ignores this field.
-    "backup_filename": null
+    // apply VPN DNS to the system through setdns on Linux, macOS, and Windows.
+    // enabled is a boolean; false disables all system DNS changes.
+    "enabled": true,
+    // mode is one of "auto" (default), "global", or "split".
+    // auto: follow upstream split domains; merge dns.domains; use global DNS when no domains exist.
+    // global: ignore upstream split domains and use VPN DNS globally.
+    // split: apply VPN DNS only to upstream split domains plus dns.domains.
+    // mode=global with non-empty dns.domains is a config-load error.
+    // mode=split with no upstream or user domains warns after VPN starts and skips DNS apply.
+    "mode": "auto",
+    // optional extra domains to route to VPN DNS in auto/split mode.
+    "domains": ["corp.example.com"]
   },
   "socks5": {
     // optional: run entirely in userspace (gVisor netstack) and expose a SOCKS5
@@ -232,6 +236,16 @@ RUST_LOG=debug ./corplink-rs config.json
 }
 ```
 
+## DNS 模式
+
+启用 `dns.enabled` 后，Linux、macOS、Windows 通过 `setdns` 修改系统 DNS。`dns.enabled` 是布尔值；设为 `false` 时不改系统 DNS。`dns.mode` 支持 `auto`、`global`、`split`：
+
+- `auto`（默认）：跟随服务端下发的 split DNS 域名，并合并 `dns.domains`；如果最终没有域名，则使用全局 VPN DNS。
+- `global`：忽略服务端 split DNS 域名，使用全局 VPN DNS；`dns.domains` 非空时会在配置加载阶段报错。
+- `split`：需要至少一个服务端域名或 `dns.domains`；只对这些域名使用 VPN DNS。VPN 信息返回后如果仍没有任何域名，会记录警告并跳过 DNS 设置。
+
+运行日志会打印最终 DNS 模式和域名列表。SOCKS5/netstack 模式不修改系统 DNS。
+
 ## SOCKS5 / netstack 模式
 
 设置 `socks5.listen` 后，corplink-rs 不再创建内核 TUN 网卡，而是用 [wg-go][2] 的 gVisor netstack 在用户态跑 WireGuard，并在该地址上暴露一个 SOCKS5 代理：
@@ -245,7 +259,7 @@ RUST_LOG=debug ./corplink-rs config.json
 curl --socks5-hostname user:pass@127.0.0.1:1080 https://intranet.example.com/
 ```
 
-此模式下 `wireguard.interface_name`、`dns.enabled`、`vpn.auto_setup_routes` 等与系统网卡/路由相关的设置不生效。
+此模式下 `wireguard.interface_name`、`dns.enabled`、`dns.mode`、`dns.domains`、`vpn.auto_setup_routes` 等与系统网卡/路由/DNS 相关的设置不生效。
 
 # 原理和分析
 

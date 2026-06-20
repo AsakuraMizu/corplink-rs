@@ -54,6 +54,7 @@ libc = "0.2"
 terminal_graphics = "0.1.5"
 qrcode = "0.14.1"
 anyhow = "1.0"
+setdns = "0.1"
 
 [build-dependencies]
 bindgen = "0.68"

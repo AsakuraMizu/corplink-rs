@@ -1,341 +1,224 @@
-#[cfg(target_os = "macos")]
-use std::collections::HashMap;
-#[cfg(target_os = "linux")]
-use std::fs;
-#[cfg(target_os = "linux")]
-use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
-use std::process::Command;
+use std::net::IpAddr;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use setdns::{Config as SetDnsConfig, SetDns};
 
-#[cfg(target_os = "linux")]
-const RESOLV_CONF_PATH: &str = "/etc/resolv.conf";
+use crate::config::{DnsConfig, DnsMode};
+use crate::wg::WgConf;
 
-#[cfg(target_os = "linux")]
-const LINUX_DEFAULT_BACKUP_FILENAME: &str = "resolv.conf.corplink";
+const DNS_OWNER: &str = "corplink-rs";
 
-pub struct DNSManager {
-    #[cfg(target_os = "macos")]
-    service_dns: HashMap<String, String>,
-    #[cfg(target_os = "macos")]
-    service_dns_search: HashMap<String, String>,
-
-    #[cfg(target_os = "linux")]
-    backup_path: PathBuf,
+pub struct Handle {
+    _inner: SetDns,
 }
 
-impl DNSManager {
-    pub fn new(_backup_filename: Option<String>) -> DNSManager {
-        DNSManager {
-            #[cfg(target_os = "macos")]
-            service_dns: HashMap::new(),
-            #[cfg(target_os = "macos")]
-            service_dns_search: HashMap::new(),
-
-            #[cfg(target_os = "linux")]
-            backup_path: {
-                let filename = _backup_filename
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| LINUX_DEFAULT_BACKUP_FILENAME.to_string());
-                Path::new(RESOLV_CONF_PATH)
-                    .parent()
-                    .unwrap_or_else(|| Path::new("/etc"))
-                    .join(filename)
-            },
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)]
-    pub fn backup_path(&self) -> &Path {
-        &self.backup_path
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl DNSManager {
-    fn collect_new_service_dns(&mut self) -> Result<()> {
-        let output = Command::new("networksetup")
-            .arg("-listallnetworkservices")
-            .output()
-            .context("failed to list network services")?;
-
-        let services = String::from_utf8_lossy(&output.stdout);
-        let lines = services.lines();
-        // Skip the first line's legend
-        for service in lines.skip(1) {
-            // Remove leading '*' and trim whitespace
-            let service = service.trim_start_matches('*').trim();
-            if service.is_empty() {
-                continue;
-            }
-
-            // get DNS servers
-            let dns_output = Command::new("networksetup")
-                .arg("-getdnsservers")
-                .arg(service)
-                .output()
-                .with_context(|| format!("failed to get dns servers for {service}"))?;
-            let dns_response = String::from_utf8_lossy(&dns_output.stdout)
-                .trim()
-                .to_string();
-            // if dns config for this service is not empty, output should be ip addresses seperated in lines without space
-            // otherwise, output should be "There aren't any DNS Servers set on xxx", use "Empty" instead, which can be recognized in 'networksetup -setdnsservers'
-            let dns_response = if dns_response.contains(" ") {
-                "Empty".to_string()
-            } else {
-                dns_response
-            };
-
-            self.service_dns
-                .insert(service.to_string(), dns_response.clone());
-
-            // get search domain
-            let search_output = Command::new("networksetup")
-                .arg("-getsearchdomains")
-                .arg(service)
-                .output()
-                .with_context(|| format!("failed to get search domains for {service}"))?;
-            let search_response = String::from_utf8_lossy(&search_output.stdout)
-                .trim()
-                .to_string();
-            let search_response = if search_response.contains(" ") {
-                "Empty".to_string()
-            } else {
-                search_response
-            };
-
-            self.service_dns_search
-                .insert(service.to_string(), search_response.clone());
-
-            log::debug!(
-                "DNS collected for {}, dns servers: {}, search domain: {}",
-                service,
-                dns_response,
-                search_response
-            )
-        }
-        Ok(())
-    }
-
-    pub fn set_dns(&mut self, dns_servers: Vec<&str>, dns_search: Vec<&str>) -> Result<()> {
-        if dns_servers.is_empty() {
-            return Ok(());
-        }
-        self.collect_new_service_dns()?;
-        for service in self.service_dns.keys() {
-            Command::new("networksetup")
-                .arg("-setdnsservers")
-                .arg(service)
-                .args(&dns_servers)
-                .status()
-                .with_context(|| format!("failed to set dns servers for {service}"))?;
-
-            if !dns_search.is_empty() {
-                Command::new("networksetup")
-                    .arg("-setsearchdomains")
-                    .arg(service)
-                    .args(&dns_search)
-                    .status()
-                    .with_context(|| format!("failed to set search domains for {service}"))?;
-            }
-            log::debug!("DNS set for {} with {}", service, dns_servers.join(","));
-        }
-
-        Ok(())
-    }
-
-    pub fn restore_dns(&self) -> Result<()> {
-        for (service, dns) in &self.service_dns {
-            Command::new("networksetup")
-                .arg("-setdnsservers")
-                .arg(service)
-                .args(dns.lines())
-                .status()
-                .with_context(|| format!("failed to reset dns servers for {service}"))?;
-
-            log::debug!("DNS server reset for {} with {}", service, dns);
-        }
-        for (service, search_domain) in &self.service_dns_search {
-            Command::new("networksetup")
-                .arg("-setsearchdomains")
-                .arg(service)
-                .args(search_domain.lines())
-                .status()
-                .with_context(|| format!("failed to reset search domains for {service}"))?;
-            log::debug!(
-                "DNS search domain reset for {} with {}",
-                service,
-                search_domain
-            )
-        }
-        log::debug!("DNS reset");
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl DNSManager {
-    pub fn set_dns(&mut self, dns_servers: Vec<&str>, dns_search: Vec<&str>) -> Result<()> {
-        if dns_servers.is_empty() {
-            return Ok(());
-        }
-
-        if self.backup_path.exists() {
-            log::warn!(
-                "existing backup at {} — a previous instance likely did not exit \
-                 gracefully; keeping that file as the authoritative pre-override",
-                self.backup_path.display()
+pub fn apply_vpn_dns(wg_conf: &WgConf, dns: &DnsConfig, device: &str) -> Option<Handle> {
+    match build_setdns_config(wg_conf, dns, device) {
+        Ok(Some(plan)) => {
+            log::info!(
+                "applying vpn dns: mode={}, servers={:?}, domains={:?}",
+                plan.mode.as_str(),
+                plan.config.servers,
+                plan.config.domains
             );
-        } else {
-            if let Err(e) = fs::rename(RESOLV_CONF_PATH, &self.backup_path) {
-                log::warn!(
-                    "could not back up {} to {}: {e}. \
-                     Overriding without backup; restore on exit will be a no-op.",
-                    RESOLV_CONF_PATH,
-                    self.backup_path.display()
-                );
-            } else {
-                log::info!(
-                    "renamed {} -> {} for backup",
-                    RESOLV_CONF_PATH,
-                    self.backup_path.display()
-                );
+            match SetDns::apply(plan.config) {
+                Ok(handle) => Some(Handle { _inner: handle }),
+                Err(err) => {
+                    log::warn!("failed to set dns: {err}");
+                    None
+                }
             }
         }
-
-        let new_content = render_resolv_conf(&dns_servers, &dns_search);
-        fs::write(RESOLV_CONF_PATH, &new_content)
-            .with_context(|| format!("failed to write {RESOLV_CONF_PATH}"))?;
-
-        log::info!(
-            "DNS overridden in {}; servers={:?} search={:?}",
-            RESOLV_CONF_PATH,
-            dns_servers,
-            dns_search
-        );
-        Ok(())
-    }
-
-    pub fn restore_dns(&self) -> Result<()> {
-        if !self.backup_path.exists() {
-            return Ok(());
+        Ok(None) => {
+            log::warn!(
+                "dns.mode=split but no split dns domains were provided; skipping system dns"
+            );
+            None
         }
-        match fs::rename(&self.backup_path, RESOLV_CONF_PATH) {
-            Ok(()) => {
-                log::info!(
-                    "restored {} from {} (via rename)",
-                    RESOLV_CONF_PATH,
-                    self.backup_path.display()
-                );
-                Ok(())
-            }
-            Err(e) => {
-                log::warn!(
-                    "could not restore {} by renaming {} back: {e}. \
-                     Leaving backup on disk.",
-                    RESOLV_CONF_PATH,
-                    self.backup_path.display()
-                );
-                Ok(())
-            }
+        Err(err) => {
+            log::warn!("failed to prepare vpn dns config: {err:#}");
+            None
         }
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-impl DNSManager {
-    pub fn set_dns(&mut self, _dns_servers: Vec<&str>, _dns_search: Vec<&str>) -> Result<()> {
-        Ok(())
-    }
-    pub fn restore_dns(&self) -> Result<()> {
-        Ok(())
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum DnsApplyMode {
+    Global,
+    Split,
+}
+
+impl DnsApplyMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Split => "split",
+        }
     }
 }
 
-#[cfg(target_os = "linux")]
-fn render_resolv_conf(dns_servers: &[&str], dns_search: &[&str]) -> String {
-    let mut out = String::new();
-    out.push_str("# Generated by corplink-rs (will be restored on graceful exit)\n");
-    for dns in dns_servers {
-        out.push_str(&format!("nameserver {dns}\n"));
-    }
-    if !dns_search.is_empty() {
-        out.push_str(&format!("search {}\n", dns_search.join(" ")));
-    }
-    out
+struct DnsApplyPlan {
+    mode: DnsApplyMode,
+    config: SetDnsConfig,
 }
 
-#[cfg(all(test, target_os = "linux"))]
+fn build_setdns_config(
+    wg_conf: &WgConf,
+    dns: &DnsConfig,
+    device: &str,
+) -> Result<Option<DnsApplyPlan>> {
+    let servers = wg_conf
+        .dns_servers
+        .iter()
+        .filter(|server| !server.is_empty())
+        .map(|server| {
+            server
+                .parse::<IpAddr>()
+                .with_context(|| format!("failed to parse vpn dns {:?}", server))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if servers.is_empty() {
+        bail!("vpn dns server list is empty");
+    }
+
+    let domains = match dns.mode {
+        DnsMode::Auto | DnsMode::Split => {
+            let mut domains = wg_conf.dns_domains.clone();
+            domains.extend(dns.domains.iter().cloned());
+            domains
+        }
+        DnsMode::Global => Vec::new(),
+    };
+
+    if domains.is_empty() && dns.mode == DnsMode::Split {
+        return Ok(None);
+    }
+
+    let mode = if domains.is_empty() {
+        DnsApplyMode::Global
+    } else {
+        DnsApplyMode::Split
+    };
+
+    Ok(Some(DnsApplyPlan {
+        mode,
+        config: SetDnsConfig {
+            owner: DNS_OWNER.to_owned(),
+            servers,
+            domains,
+            device: Some(device.to_owned()),
+        },
+    }))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
-    #[test]
-    fn default_filename_when_none_given() {
-        let m = DNSManager::new(None);
-        let expected = Path::new(RESOLV_CONF_PATH)
-            .parent()
-            .unwrap()
-            .join(LINUX_DEFAULT_BACKUP_FILENAME);
-        assert_eq!(m.backup_path(), expected.as_path());
-    }
-
-    #[test]
-    fn default_filename_when_empty_string_given() {
-        let m = DNSManager::new(Some(String::new()));
-        let expected = Path::new(RESOLV_CONF_PATH)
-            .parent()
-            .unwrap()
-            .join(LINUX_DEFAULT_BACKUP_FILENAME);
-        assert_eq!(m.backup_path(), expected.as_path());
-    }
-
-    #[test]
-    fn custom_filename_joined_with_resolv_conf_parent() {
-        let m = DNSManager::new(Some("my.bak".to_string()));
-        assert_eq!(m.backup_path(), Path::new("/etc/my.bak"));
-    }
-
-    #[test]
-    fn backup_path_always_in_resolv_conf_dir() {
-        // Invariant: because we only take a filename and join it with
-        // RESOLV_CONF_PATH's parent, the backup is always on the same fs
-        // as /etc/resolv.conf — rename(2) cannot EXDEV.
-        let resolv_dir = Path::new(RESOLV_CONF_PATH).parent().unwrap();
-        for filename in ["resolv.conf.corplink", "other.bak", "x"] {
-            let m = DNSManager::new(Some(filename.to_string()));
-            assert_eq!(m.backup_path().parent().unwrap(), resolv_dir);
+    fn wg_conf(dns_servers: &[&str], dns_domains: &[&str]) -> WgConf {
+        WgConf {
+            address: "10.0.0.2/32".to_owned(),
+            address6: String::new(),
+            peer_address: "198.51.100.1:51820".to_owned(),
+            mtu: 1420,
+            public_key: "public".to_owned(),
+            private_key: "private".to_owned(),
+            peer_key: "peer".to_owned(),
+            allowed_ips: Vec::new(),
+            routes: Vec::new(),
+            dns_servers: dns_servers
+                .iter()
+                .map(|server| (*server).to_owned())
+                .collect(),
+            dns_domains: dns_domains
+                .iter()
+                .map(|domain| (*domain).to_owned())
+                .collect(),
+            protocol: 0,
         }
     }
 
-    #[test]
-    fn render_single_dns_no_search() {
-        let out = render_resolv_conf(&["10.8.8.18"], &[]);
-        assert!(out.contains("nameserver 10.8.8.18\n"));
-        assert!(!out.contains("search "));
+    fn dns_config(mode: DnsMode, domains: &[&str]) -> DnsConfig {
+        DnsConfig {
+            enabled: true,
+            mode,
+            domains: domains.iter().map(|domain| (*domain).to_owned()).collect(),
+        }
+    }
+
+    fn plan(wg_conf: &WgConf, dns: &DnsConfig) -> DnsApplyPlan {
+        build_setdns_config(wg_conf, dns, "utun4")
+            .expect("dns config should build")
+            .expect("dns config should be applied")
     }
 
     #[test]
-    fn render_multiple_dns() {
-        let out = render_resolv_conf(&["10.8.8.18", "114.114.114.114"], &[]);
-        assert!(out.contains("nameserver 10.8.8.18\n"));
-        assert!(out.contains("nameserver 114.114.114.114\n"));
-    }
+    fn auto_without_domains_uses_global_dns() {
+        let wg_conf = wg_conf(&["10.0.0.53"], &[]);
+        let plan = plan(&wg_conf, &dns_config(DnsMode::Auto, &[]));
 
-    #[test]
-    fn render_with_search_domains() {
-        let out = render_resolv_conf(&["10.8.8.18"], &["bytedance.net", "corp.local"]);
-        assert!(out.contains("search bytedance.net corp.local\n"));
-    }
-
-    #[test]
-    fn render_starts_with_comment_marker() {
-        let out = render_resolv_conf(&["1.1.1.1"], &[]);
-        assert!(
-            out.starts_with("# "),
-            "expected a comment banner, got: {out}"
+        assert_eq!(plan.mode, DnsApplyMode::Global);
+        assert!(plan.config.domains.is_empty());
+        assert_eq!(plan.config.device.as_deref(), Some("utun4"));
+        assert_eq!(
+            plan.config.servers,
+            vec!["10.0.0.53".parse::<IpAddr>().unwrap()]
         );
+    }
+
+    #[test]
+    fn auto_merges_upstream_and_user_domains_for_split_dns() {
+        let wg_conf = wg_conf(&["10.0.0.53"], &["corp.example"]);
+        let plan = plan(
+            &wg_conf,
+            &dns_config(DnsMode::Auto, &["dev.example", "corp.example"]),
+        );
+
+        assert_eq!(plan.mode, DnsApplyMode::Split);
+        assert_eq!(
+            plan.config.domains,
+            vec!["corp.example", "dev.example", "corp.example"]
+        );
+    }
+
+    #[test]
+    fn global_ignores_upstream_domains() {
+        let wg_conf = wg_conf(&["10.0.0.53"], &["corp.example"]);
+        let plan = plan(&wg_conf, &dns_config(DnsMode::Global, &[]));
+
+        assert_eq!(plan.mode, DnsApplyMode::Global);
+        assert!(plan.config.domains.is_empty());
+    }
+
+    #[test]
+    fn split_without_domains_skips_dns_apply() {
+        let wg_conf = wg_conf(&["10.0.0.53"], &[]);
+        let config = dns_config(DnsMode::Split, &[]);
+
+        assert!(build_setdns_config(&wg_conf, &config, "utun4")
+            .expect("dns config should build")
+            .is_none());
+    }
+
+    #[test]
+    fn backup_dns_server_is_included_after_primary() {
+        let wg_conf = wg_conf(&["10.0.0.53", "10.0.0.54"], &[]);
+        let plan = plan(&wg_conf, &dns_config(DnsMode::Auto, &[]));
+
+        assert_eq!(
+            plan.config.servers,
+            vec![
+                "10.0.0.53".parse::<IpAddr>().unwrap(),
+                "10.0.0.54".parse::<IpAddr>().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_dns_server_is_rejected_before_apply() {
+        let wg_conf = wg_conf(&["not-an-ip"], &[]);
+        let config = dns_config(DnsMode::Auto, &[]);
+
+        assert!(build_setdns_config(&wg_conf, &config, "utun4").is_err());
     }
 }

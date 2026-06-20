@@ -17,8 +17,6 @@ use anyhow::{anyhow, Context, Result};
 
 use client::Client;
 use config::{ConfigStore, Platform};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use dns::DNSManager;
 use wg::WgConf;
 
 fn print_usage_and_exit(name: &str, conf: &str) {
@@ -87,10 +85,8 @@ async fn run() -> Result<()> {
         check_privilege();
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let use_vpn_dns = conf.dns.enabled;
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let dns_backup_filename = conf.dns.backup_filename.clone();
+    let dns_config = conf.dns.clone();
 
     if conf.portal.server.is_none() {
         let resp = client::get_company_url(conf.portal.company_name.as_str())
@@ -175,18 +171,11 @@ async fn run() -> Result<()> {
             .with_context(|| format!("failed to config interface with uapi for {name}"))?;
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    let mut dns_manager = DNSManager::new(dns_backup_filename);
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    if use_vpn_dns && !netstack_mode {
-        match dns_manager.set_dns(vec![&wg_conf.dns], vec![]) {
-            Ok(_) => {}
-            Err(err) => {
-                log::warn!("failed to set dns: {}", err);
-            }
-        }
-    }
+    let dns_handle = if use_vpn_dns && !netstack_mode {
+        dns::apply_vpn_dns(&wg_conf, &dns_config, &name)
+    } else {
+        None
+    };
 
     let mut exit_code = 0;
     tokio::select! {
@@ -215,17 +204,9 @@ async fn run() -> Result<()> {
         };
     }
 
-    wg::stop_wg_go();
+    drop(dns_handle);
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    if use_vpn_dns && !netstack_mode {
-        match dns_manager.restore_dns() {
-            Ok(_) => {}
-            Err(err) => {
-                log::warn!("failed to delete dns: {}", err);
-            }
-        }
-    }
+    wg::stop_wg_go();
 
     log::info!("reach exit");
     exit(exit_code)
