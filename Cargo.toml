@@ -56,7 +56,7 @@ libc = "0.2"
 qrcode = "0.14.1"
 supports-unicode = "3.0"
 anyhow = "1.0"
-setdns = "0.1"
+setdns = "0.1.1"
 
 [build-dependencies]
 bindgen = "0.68"
