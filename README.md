@@ -332,6 +332,8 @@ graph TD;
 
 # Changelog
 
+- 0.5.5
+  - bump version to 0.5.5
 - 0.5.4
   - fix memory leak in unsafe code
   - refactor error handling with `anyhow`

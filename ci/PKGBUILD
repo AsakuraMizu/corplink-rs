@@ -2,7 +2,7 @@
 # The AUR PKGBUILD is maintained outside this repository.
 
 pkgname=corplink-rs
-pkgver=5.4
+pkgver=5.5
 pkgrel=1
 pkgdesc='Corplink client written in Rust'
 arch=('x86_64')
